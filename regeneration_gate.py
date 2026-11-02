@@ -55,7 +55,7 @@ class TenSorRegenerationGate:
                     {
                         "default": "carousel-001",
                         "multiline": False,
-                        "tooltip": "Use the same value for all four slots; change it for a new carousel.",
+                        "tooltip": "Use the same value for all 24 slots; change it for a new dataset run.",
                     },
                 ),
                 "slot_id": (
@@ -63,7 +63,7 @@ class TenSorRegenerationGate:
                     {
                         "default": 1,
                         "min": 1,
-                        "max": 4,
+                        "max": 24,
                         "step": 1,
                         "tooltip": "Unique slot number within this carousel session.",
                     },

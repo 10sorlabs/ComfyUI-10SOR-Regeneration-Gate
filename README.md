@@ -27,7 +27,7 @@ git pull
 
 Restart ComfyUI after updating.
 
-## Connect four carousel slots
+## Connect dataset slots
 
 For each slot, insert one gate after the last operation that should be skipped and before `Batch Images`:
 
@@ -41,7 +41,7 @@ Extract prompt -> image edit -> KSampler -> VAE Decode -> enhancement
                                                        Batch Images
 ```
 
-Configure the four gates as follows:
+Configure one gate per image slot. All gates share the same `session_id`; each gate gets a unique `slot_id` from 1 through 24.
 
 | Gate | `session_id` | `slot_id` |
 |---|---|---:|
@@ -49,8 +49,10 @@ Configure the four gates as follows:
 | Slot 2 | Same shared carousel ID | 2 |
 | Slot 3 | Same shared carousel ID | 3 |
 | Slot 4 | Same shared carousel ID | 4 |
+| … | Same shared carousel ID | … |
+| Slot 24 | Same shared carousel ID | 24 |
 
-On a new session, run all four gates with `regenerate = TRUE` once. After that, set approved slots to `FALSE` and leave only the slots that need a new image on `TRUE`.
+On a new session, run all 24 gates with `regenerate = TRUE` once. After that, set approved slots to `FALSE` and leave only the slots that need a new image on `TRUE`.
 
 Changing `session_id` starts an isolated carousel. A preserved slot with no saved image fails with a clear message instead of silently spending GPU time.
 
@@ -61,7 +63,7 @@ Changing `session_id` starts an isolated carousel. A preserved slot with no save
 | `fresh_image` | Lazy IMAGE connection from the end of one generation branch |
 | `regenerate` | `TRUE` evaluates and stores the branch; `FALSE` restores the saved image |
 | `session_id` | Shared identifier for one carousel; change it for a new carousel |
-| `slot_id` | Unique slot number, 1 through 4 |
+| `slot_id` | Unique slot number, 1 through 24 |
 
 The single output connects to the corresponding input of the existing `Batch Images` node.
 
@@ -71,7 +73,7 @@ ComfyUI normally evaluates all inputs before executing a node. This extension ma
 
 When `regenerate` is `FALSE`, `check_lazy_status` returns no required lazy inputs. The scheduler therefore has no execution dependency on that slot's generation branch. The stored image is loaded locally and the batch still receives a valid IMAGE tensor.
 
-The branch must not feed another active output node. If a preview or save node is connected inside the image branch, that separate output can still cause the branch to execute. Remove or mute those image-side outputs when validating selective regeneration.
+The branch must not feed another active output node. If a preview or save node is connected inside the image branch, that separate output can still cause the branch to execute. Remove or mute those image-side outputs, or reconnect them to the gate's output so previews show the generated-or-restored image without activating the locked branch.
 
 The three-stage VLM can remain active through its own final-text preview/output. Image gates do not lock prompts; they only remove locked image branches from that execution.
 
@@ -102,15 +104,14 @@ Use persistent disk storage on RunPod. Deleting the directory removes the saved 
 
 ## Verifying sampler skipping
 
-Enable normal ComfyUI execution logging, run all four slots once, then repeat with selected gates set to `FALSE`. In the second run, locked branch node IDs must not appear as executing nodes. Expected sampler executions are:
+Enable normal ComfyUI execution logging, run all 24 slots once, then repeat with selected gates set to `FALSE`. In the second run, locked branch node IDs must not appear as executing nodes. The expected number of KSampler executions is `24 - preserved slots`.
 
 | Preserved slots | Expected KSampler executions |
 |---:|---:|
-| 0 | 4 |
-| 1 | 3 |
-| 2 | 2 |
-| 3 | 1 |
-| 4 | 0 |
+| 0 | 24 |
+| 1 | 23 |
+| 23 | 1 |
+| 24 | 0 |
 
 These counts assume no other active output depends on a preserved branch.
 
@@ -145,7 +146,7 @@ python -m pip install pytest
 pytest
 ```
 
-The automated suite covers exact tensor round-trips, four-slot behavior, session isolation, persistence across store instances, atomic failure recovery, corrupt/missing state, lazy-input decisions, unlocking, and node registration.
+The automated suite covers exact tensor round-trips, 24-slot behavior, session isolation, persistence across store instances, atomic failure recovery, corrupt/missing state, lazy-input decisions, unlocking, and node registration.
 
 ### Current ComfyUI execution validation
 

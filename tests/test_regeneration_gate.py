@@ -20,6 +20,7 @@ def test_input_declares_fresh_image_lazy():
     config = TenSorRegenerationGate.INPUT_TYPES()["required"]
     assert config["fresh_image"][1]["lazy"] is True
     assert config["regenerate"][1]["default"] is True
+    assert config["slot_id"][1]["max"] == 24
 
 
 def test_regenerate_requests_lazy_image_only_when_missing(tmp_path):
@@ -63,6 +64,20 @@ def test_partial_regeneration_keeps_locked_slots(tmp_path):
     assert torch.equal(outputs[1], initial[1])
     assert torch.equal(outputs[2], incoming[2])
     assert torch.equal(outputs[3], incoming[3])
+
+
+def test_twenty_four_slots_are_isolated(tmp_path):
+    store = ImageStore(tmp_path)
+    gates = [TenSorRegenerationGate(store) for _ in range(24)]
+
+    for slot, gate in enumerate(gates, start=1):
+        gate.execute(True, "dataset", slot, image(slot / 100))
+
+    for slot, gate in enumerate(gates, start=1):
+        assert torch.equal(
+            gate.execute(False, "dataset", slot, None)[0],
+            image(slot / 100),
+        )
 
 
 def test_unlocking_replaces_stored_image(tmp_path):
