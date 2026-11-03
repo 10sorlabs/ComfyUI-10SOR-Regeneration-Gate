@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
-import { LiteGraph, LGraphNode } from "../../scripts/litegraph.js";
+// ComfyUI exposes its LiteGraph classes on window for extensions.
+const { LiteGraph, LGraphNode } = window;
 
 /**
  * Frontend-only boolean controller. As with ComfyUI's Primitive node, widget
