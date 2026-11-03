@@ -1,149 +1,153 @@
 import { app } from "../../scripts/app.js";
-// ComfyUI exposes its LiteGraph classes on window for extensions.
-const { LiteGraph, LGraphNode } = window;
 
-/**
- * Frontend-only boolean controller. As with ComfyUI's Primitive node, widget
- * values are written to connected widget inputs before API prompt serialization.
- * No server-side fixed output count is required.
- */
-const NODE_TYPE = "10sorLabs/Regeneration Control Panel";
-const LABEL = (index) => "Image " + String(index + 1).padStart(2, "0");
+const MAX_OUTPUTS = 1024;
+const NODE_CLASS = "10SORRegenerationControlPanel";
+const label = (index) => "Image " + String(index + 1).padStart(2, "0");
 
-function linkedTargets(node, index) {
-    const result = [];
-    for (const target of node.getOutputNodes?.(index) ?? []) {
-        for (let slot = 0; slot < (target.inputs?.length ?? 0); slot++) {
-            const link = target.getInputLink?.(slot);
-            if (link && String(link.origin_id) === String(node.id) && link.origin_slot === index) {
-                result.push([target, slot]);
-            }
-        }
+function parseValues(value) {
+    try {
+        const parsed = JSON.parse(value ?? "[]");
+        return Array.isArray(parsed) ? parsed.map((v) => v === true) : [];
+    } catch {
+        return [];
     }
-    return result;
 }
 
 app.registerExtension({
-    name: "10sorLabs.RegenerationControlPanel",
-    registerCustomNodes() {
-        class RegenerationControlPanel extends LGraphNode {
-            static title = "10SOR Regeneration Control Panel";
-            static category = "10sorLabs";
-            static collapsable = true;
+    name: "10sorLabs.AdaptiveRegenerationControlPanel",
 
-            constructor(title) {
-                super(title ?? RegenerationControlPanel.title);
-                this.isVirtualNode = true;
-                this.serialize_widgets = true;
-                this._restoring = false;
-                this._master = this.addWidget("toggle", "Toggle all", true, (value) => {
-                    this._setAll(Boolean(value));
-                }, { on: "REGENERATE ALL", off: "PRESERVE ALL" });
-                this._appendOutput();
-                this.setSize(this.computeSize());
+    beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name !== NODE_CLASS) return;
+
+        const oldCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function (...args) {
+            const result = oldCreated?.apply(this, args);
+            this._10sorMutating = true;
+
+            // Only one output is visible initially. Backend indices are
+            // stable and support links through subgraphs (unlike virtual nodes).
+            while (this.outputs.length > 1) {
+                this.removeOutput(this.outputs.length - 1);
             }
 
-            _appendOutput() {
-                const index = this.outputs.length;
-                const name = LABEL(index);
-                this.addOutput(name, "BOOLEAN");
-                this.addWidget("toggle", name, true, () => {
-                    this._updateMaster();
-                    this.applyToGraph();
-                }, { on: "REGENERATE", off: "PRESERVE" });
-                this.setSize(this.computeSize());
+            const state = this.widgets?.find((w) => w.name === "values_json");
+            if (!state) {
+                throw new Error("10SOR Control Panel requires the values_json backend widget.");
             }
+            this._10sorState = state;
+            state.hidden = true;
+            state.computeSize = () => [0, -4];
 
-            _setAll(value) {
-                for (const widget of this.widgets.slice(1)) widget.value = value;
-                this._master.value = value;
-                this.applyToGraph();
-                this.graph?.setDirtyCanvas?.(true, true);
+            this._10sorAll = this.addWidget("toggle", "Toggle all", true, (value) => {
+                this._10sorSetAll(Boolean(value));
+            }, { on: "ALL ON", off: "ALL OFF" });
+            this._10sorAll.serialize = false;
+            this._10sorAll.options.serialize = false;
+            this._10sorToggles = [];
+            this._10sorAddToggle();
+            this._10sorMutating = false;
+            this._10sorLoadState();
+
+            this.color = "#4f372c";
+            this.bgcolor = "#28201d";
+            this.setSize(this.computeSize());
+            return result;
+        };
+
+        nodeType.prototype._10sorAddToggle = function () {
+            const index = this._10sorToggles.length;
+            const widget = this.addWidget("toggle", label(index), true, () => {
+                this._10sorUpdateMaster();
+                this._10sorSaveState();
+            }, { on: "REGENERATE", off: "PRESERVE" });
+            // The source of truth is the backend-recognized values_json
+            // widget. Do not send extra, undefined widget keys to the API.
+            widget.serialize = false;
+            widget.options.serialize = false;
+            this._10sorToggles.push(widget);
+        };
+
+        nodeType.prototype._10sorEnsureWidgets = function () {
+            while (this._10sorToggles.length < this.outputs.length) this._10sorAddToggle();
+            while (this._10sorToggles.length > this.outputs.length) {
+                const removed = this._10sorToggles.pop();
+                this.removeWidget(removed);
             }
+        };
 
-            _updateMaster() {
-                // Mixed selection displays FALSE, allowing the next click to
-                // enable all branches again.
-                this._master.value = this.widgets.slice(1).every((widget) => Boolean(widget.value));
-            }
+        nodeType.prototype._10sorLoadState = function () {
+            const stored = parseValues(this._10sorState?.value);
+            this._10sorEnsureWidgets();
+            this._10sorToggles.forEach((widget, index) => {
+                widget.value = stored[index] ?? true;
+            });
+            this._10sorUpdateMaster();
+        };
 
-            _syncOutputs() {
-                if (this._restoring || app.configuringGraph) return;
+        nodeType.prototype._10sorUpdateMaster = function () {
+            // Mixed state counts as OFF; clicking it enables every slot.
+            this._10sorAll.value = this._10sorToggles.every((w) => w.value === true);
+        };
+
+        nodeType.prototype._10sorSaveState = function () {
+            if (!this._10sorState) return;
+            this._10sorState.value = JSON.stringify(this._10sorToggles.map((w) => w.value === true));
+            this.graph?.setDirtyCanvas?.(true, true);
+        };
+
+        nodeType.prototype._10sorSetAll = function (enabled) {
+            for (const widget of this._10sorToggles) widget.value = enabled;
+            this._10sorAll.value = enabled;
+            this._10sorSaveState();
+        };
+
+        nodeType.prototype._10sorSyncOutputs = function () {
+            if (this._10sorMutating || app.configuringGraph) return;
+            this._10sorMutating = true;
+            try {
                 let lastConnected = -1;
-                for (let i = 0; i < this.outputs.length; i++) {
-                    if (this.isOutputConnected?.(i)) lastConnected = i;
+                for (let index = 0; index < this.outputs.length; index++) {
+                    if (this.isOutputConnected(index)) lastConnected = index;
                 }
-                const needed = Math.max(1, lastConnected + 2);
-                while (this.outputs.length < needed) this._appendOutput();
-                while (this.outputs.length > needed) {
-                    const last = this.outputs.length - 1;
-                    if (this.isOutputConnected?.(last)) break;
-                    const widget = this.widgets[last + 1];
-                    this.removeOutput(last);
-                    if (widget) this.removeWidget(widget);
+                // Always leave exactly one free socket after the final linked
+                // slot, except at the backend's technical capacity.
+                const desired = Math.min(MAX_OUTPUTS, Math.max(1, lastConnected + 2));
+                while (this.outputs.length < desired) {
+                    this.addOutput(label(this.outputs.length), "BOOLEAN");
                 }
-                this._updateMaster();
+                while (this.outputs.length > desired) {
+                    this.removeOutput(this.outputs.length - 1);
+                }
+                this._10sorEnsureWidgets();
+                this._10sorSaveState();
+                this._10sorUpdateMaster();
                 this.setSize(this.computeSize());
-                this.graph?.setDirtyCanvas?.(true, true);
+            } finally {
+                this._10sorMutating = false;
             }
+        };
 
-            onConnectionsChange(type, slot, connected) {
-                if (type !== LiteGraph.OUTPUT || this._restoring || app.configuringGraph) return;
-                this._syncOutputs();
-                if (connected && slot >= 0) this._applyOutput(slot);
-            }
+        const oldConnections = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (...args) {
+            const result = oldConnections?.apply(this, args);
+            if (args[0] === window.LiteGraph?.OUTPUT) this._10sorSyncOutputs();
+            return result;
+        };
 
-            // A frontend-only controller must not be wired to non-widget inputs,
-            // which would require a real producer in the backend execution graph.
-            onConnectOutput(_slot, _type, input, target) {
-                if (input?.type !== "BOOLEAN") return false;
-                const widgetName = input.widget?.name ?? input.name;
-                return Boolean(target?.widgets?.some((widget) => widget.name === widgetName));
-            }
+        const oldAfterGraphConfigured = nodeType.prototype.onAfterGraphConfigured;
+        nodeType.prototype.onAfterGraphConfigured = function (...args) {
+            const result = oldAfterGraphConfigured?.apply(this, args);
+            // Restore saved per-image controls AFTER graph/widget restoration.
+            this._10sorLoadState();
+            this._10sorSyncOutputs();
+            return result;
+        };
 
-            _applyOutput(index) {
-                const value = Boolean(this.widgets?.[index + 1]?.value);
-                for (const [target, slot] of linkedTargets(this, index)) {
-                    const input = target?.inputs?.[slot];
-                    if (!input) continue;
-                    const name = input.widget?.name ?? input.name;
-                    const widget = target.widgets?.find((candidate) => candidate.name === name);
-                    if (!widget) continue;
-                    if (widget.value !== value) {
-                        widget.value = value;
-                        widget.callback?.(value, app.canvas, target);
-                    }
-                }
-            }
-
-            applyToGraph() {
-                // ComfyUI calls this before serializing queued prompts, including
-                // controllers inside subgraphs.
-                for (let i = 0; i < this.outputs.length; i++) this._applyOutput(i);
-            }
-
-            configure(info) {
-                // ComfyUI restores widget values in order; recreate every saved
-                // widget before the base implementation reads widgets_values.
-                this._restoring = true;
-                const wanted = Math.max(1, info?.outputs?.length ?? 1);
-                while (this.outputs.length < wanted) this._appendOutput();
-                try {
-                    super.configure(info);
-                } finally {
-                    this._restoring = false;
-                }
-                this._master = this.widgets[0];
-                this._updateMaster();
-            }
-
-            onAfterGraphConfigured() {
-                this._syncOutputs();
-                this.applyToGraph();
-            }
-        }
-
-        LiteGraph.registerNodeType(NODE_TYPE, RegenerationControlPanel);
-        RegenerationControlPanel.category = "10sorLabs";
+        const oldConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (...args) {
+            const result = oldConfigure?.apply(this, args);
+            this._10sorLoadState();
+            return result;
+        };
     },
 });
