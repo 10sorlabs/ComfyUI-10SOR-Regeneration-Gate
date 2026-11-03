@@ -5,7 +5,7 @@
 - `regenerate = TRUE`: ComfyUI evaluates the lazy image input, the branch runs, and the successful result replaces that slot's saved tensor.
 - `regenerate = FALSE`: the lazy image input is not requested, the branch is skipped, and the last saved tensor is returned.
 
-The extension uses one gate per slot, no frontend JavaScript, no database, and no changes to ComfyUI core.
+The extension uses one gate per slot and includes a small frontend control panel with native BOOLEAN outputs. No database or ComfyUI core modifications are required.
 
 ## Install
 
@@ -14,7 +14,7 @@ cd /workspace/ComfyUI/custom_nodes
 git clone https://github.com/10sorlabs/ComfyUI-10SOR-Regeneration-Gate.git
 ```
 
-Restart ComfyUI. Search for **10SOR Regeneration Gate** under the `10sorLabs` category.
+Restart ComfyUI and hard-refresh the browser. Search for **10SOR Regeneration Gate** or **10SOR Regeneration Control Panel** under the `10sorLabs` category.
 
 The extension has no additional package requirements. It uses PyTorch and `folder_paths`, which are already part of a normal ComfyUI installation.
 
@@ -22,7 +22,9 @@ The extension has no additional package requirements. It uses PyTorch and `folde
 
 ```bash
 cd /workspace/ComfyUI/custom_nodes/ComfyUI-10SOR-Regeneration-Gate
-git pull
+git fetch origin main
+git switch main
+git merge --ff-only origin/main
 ```
 
 Restart ComfyUI after updating.
@@ -66,6 +68,23 @@ Changing `session_id` starts an isolated carousel. A preserved slot with no save
 | `slot_id` | Unique slot number, 1 through 24 |
 
 The single output connects to the corresponding input of the existing `Batch Images` node.
+
+## Adaptive 10SOR Regeneration Control Panel
+
+Add **10SOR Regeneration Control Panel** from the `10sorLabs` category to replace long chains of individual BOOLEAN primitives. The panel works with ordinary BOOLEAN connections, including subgraph inputs and outputs.
+
+- A new panel starts with **one** BOOLEAN output and one per-image toggle.
+- Connecting the last output automatically reveals the next output and its toggle. Disconnecting trailing outputs removes unneeded controls.
+- Each `Image NN` switch is independent: **REGENERATE / TRUE** or **PRESERVE / FALSE**.
+- **Toggle all** sets every currently visible per-image switch to TRUE or FALSE. An individually mixed selection is shown with the master OFF; clicking it turns all ON.
+- Current control values are saved in the workflow through one hidden `values_json` input and restored on load. All outputs are real backend BOOLEAN values (not virtual-widget links), so the node can drive other nodes and subgraph boundaries.
+- The frontend adds sockets on demand. Under the hood, ComfyUI requires a static output schema: the safety limit is **1,024 outputs per control panel**. This technical limit is unrelated to the Regeneration Gate's current 24-slot storage limit.
+
+**Important:** The control panel itself does not create or replace regeneration gates; connect its output `Image 01` to gate 1's `regenerate`, and so on. A newly created panel has all slots TRUE by default. Preserve only after that slot has been generated at least once for its current session ID. The individual gate's `session_id` and `slot_id` remain unchanged.
+
+### Update after changing frontend code
+
+A Python-only reload is not sufficient for custom frontend JavaScript. Restart ComfyUI and hard-refresh the browser (`Ctrl+Shift+R`) after updating. Existing saved workflows are not modified by the installation.
 
 ## Why the upstream KSampler is skipped
 
@@ -146,7 +165,7 @@ python -m pip install pytest
 pytest
 ```
 
-The automated suite covers exact tensor round-trips, 24-slot behavior, session isolation, persistence across store instances, atomic failure recovery, corrupt/missing state, lazy-input decisions, unlocking, and node registration.
+The automated Python suite covers exact tensor round-trips, 24-slot behavior, session isolation, persistence, lazy-input decisions, control-panel native BOOLEAN outputs, and node registration. The JavaScript smoke test covers dynamic socket growth, toggle-all behavior, preservation, and reload.
 
 ### Current ComfyUI execution validation
 
