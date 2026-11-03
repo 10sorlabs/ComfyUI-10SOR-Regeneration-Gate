@@ -1,88 +1,84 @@
-// Standalone frontend smoke test; no ComfyUI runtime or third-party deps required.
+// Frontend smoke tests with a minimal LiteGraph mock; no external packages.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
-const types = {};
-const LiteGraph = {
-  OUTPUT: 2,
-  registerNodeType: (name, cls) => { types[name] = cls; },
-};
+let extension;
 const app = {
   configuringGraph: false,
-  canvas: {},
-  registerExtension(extension) { extension.registerCustomNodes(); },
+  registerExtension(e) { extension = e; },
 };
-class LGraphNode {
-  constructor(title) { this.title = title; this.id = 100; this.outputs = []; this.widgets = []; this.size = [250, 80]; }
+const window = { LiteGraph: { OUTPUT: 2 } };
+const js = fs.readFileSync("web/regeneration_control_panel.js", "utf8")
+  .replace(/^import .*;\s*$/gm, "");
+vm.runInNewContext(js, { app, window, console });
+assert.ok(extension?.beforeRegisterNodeDef);
+
+class Node {
+  constructor() {
+    this.outputs = Array.from({ length: 1024 }, (_, i) => ({
+      name: "Image " + (i + 1), type: "BOOLEAN", targets: [],
+    }));
+    this.widgets = [{ name: "values_json", value: "[]" }];
+    this.size = [230, 120];
+    this.graph = { setDirtyCanvas() {} };
+  }
   addOutput(name, type) { this.outputs.push({ name, type, targets: [] }); }
+  removeOutput(i) { this.outputs.splice(i, 1); }
   addWidget(type, name, value, callback, options = {}) {
     const widget = { type, name, value, callback, options };
     this.widgets.push(widget);
     return widget;
   }
-  removeOutput(index) { this.outputs.splice(index, 1); }
-  removeWidget(widget) { this.widgets.splice(this.widgets.indexOf(widget), 1); }
-  computeSize() { return [250, 80 + this.widgets.length * 24]; }
+  removeWidget(w) { this.widgets.splice(this.widgets.indexOf(w), 1); }
+  isOutputConnected(i) { return this.outputs[i]?.targets.length > 0; }
   setSize(size) { this.size = size; }
-  isOutputConnected(index) { return !!this.outputs[index]?.targets.length; }
-  getOutputNodes(index) { return this.outputs[index]?.targets ?? []; }
-  configure(info) {
-    this.outputs = info.outputs.map((o) => ({ ...o, targets: [] }));
-    this.widgets.forEach((widget, i) => { widget.value = info.widgets_values[i]; });
-  }
+  computeSize() { return [240, this.widgets.length * 26 + 75]; }
 }
-const source = fs.readFileSync("web/regeneration_control_panel.js", "utf8")
-  .replace(/^import .*;\s*$/gm, "");
-vm.runInNewContext(source, { app, window: { LiteGraph, LGraphNode }, console });
+extension.beforeRegisterNodeDef(Node, { name: "10SORRegenerationControlPanel" });
 
-const Panel = types["10sorLabs/Regeneration Control Panel"];
-assert.ok(Panel, "Panel was not registered");
-const panel = new Panel();
-panel.graph = { setDirtyCanvas() {} };
-assert.equal(panel.outputs.length, 1, "First launch must show only one output");
+const panel = new Node();
+panel.onNodeCreated();
+assert.equal(panel.outputs.length, 1);
+assert.equal(panel._10sorToggles.length, 1);
+assert.equal(panel._10sorState.hidden, true);
 
-const gates = [];
-for (let index = 0; index < 24; index++) {
-  const gate = {
-    widgets: [{ name: "regenerate", value: true }],
-    inputs: [{ name: "regenerate" }],
-    getInputLink(slot) {
-      return slot === 0 ? { origin_id: panel.id, origin_slot: index } : null;
-    },
-  };
-  assert.equal(panel.onConnectOutput(index, "BOOLEAN", { type: "BOOLEAN", name: "regenerate" }, gate), true);
-  assert.equal(panel.onConnectOutput(index, "IMAGE", { type: "IMAGE", name: "fresh_image" }, gate), false);
-  panel.outputs[index].targets.push(gate);
-  panel.onConnectionsChange(LiteGraph.OUTPUT, index, true);
-  assert.equal(panel.outputs.length, index + 2, "Connecting the final output must add one more");
-  gates.push(gate);
+for (let i = 0; i < 24; i++) {
+  panel.outputs[i].targets.push({ id: 200 + i });
+  panel.onConnectionsChange(2, i, true);
+  assert.equal(panel.outputs.length, i + 2);
+  assert.equal(panel._10sorToggles.length, i + 2);
 }
+assert.equal(panel.outputs.length, 25);
+assert.equal(panel.widgets.length, 27);
 
-assert.equal(panel.widgets.length, 26, "One master plus 25 individual switches");
-panel.widgets[5].value = false;
-panel.widgets[5].callback(false);
-assert.equal(gates[4].widgets[0].value, false);
-assert.equal(panel.widgets[0].value, false);
-panel.widgets[0].value = true;
-panel.widgets[0].callback(true);
-assert.ok(gates.every((gate) => gate.widgets[0].value === true));
-panel.widgets[0].value = false;
-panel.widgets[0].callback(false);
-assert.ok(gates.every((gate) => gate.widgets[0].value === false));
+panel._10sorToggles[10].value = false;
+panel._10sorToggles[10].callback(false);
+assert.equal(JSON.parse(panel._10sorState.value)[10], false);
+assert.equal(panel._10sorAll.value, false);
 
-const json = {
-  outputs: panel.outputs.map((output) => ({ name: output.name, type: output.type })),
-  widgets_values: panel.widgets.map((widget) => widget.value),
-};
-const restored = new Panel();
-restored.configure(json);
+panel._10sorAll.value = false;
+panel._10sorAll.callback(false);
+assert.ok(panel._10sorToggles.every((w) => w.value === false));
+assert.ok(JSON.parse(panel._10sorState.value).every((v) => v === false));
+
+panel._10sorAll.value = true;
+panel._10sorAll.callback(true);
+assert.ok(panel._10sorToggles.every((w) => w.value === true));
+
+const saved = panel._10sorState.value;
+const restored = new Node();
+restored.onNodeCreated();
+restored.outputs = panel.outputs.map((o) => ({ ...o, targets: [...o.targets] }));
+restored._10sorState.value = saved;
+restored.onConfigure();
+restored.onAfterGraphConfigured();
 assert.equal(restored.outputs.length, 25);
-assert.equal(restored.widgets.length, 26);
-assert.ok(restored.widgets.slice(1).every((widget) => widget.value === false));
+assert.equal(restored._10sorToggles.length, 25);
+assert.ok(restored._10sorToggles.every((w) => w.value === true));
 
-panel.outputs[23].targets = [];
-panel.onConnectionsChange(LiteGraph.OUTPUT, 23, false);
-assert.equal(panel.outputs.length, 24, "Disconnected trailing slots should collapse");
+restored.outputs[23].targets = [];
+restored.onConnectionsChange(2, 23, false);
+assert.equal(restored.outputs.length, 24);
 
-console.log("PASS: dynamic expansion, toggle all, individual control, restore and pruning");
+console.log("PASS: 24 outputs, per-image control, toggle all, save/restore and disconnect");
