@@ -52,6 +52,16 @@ for (let i = 0; i < 24; i++) {
 assert.equal(panel.outputs.length, 25);
 assert.equal(panel.widgets.length, 27);
 
+// Three connected slots always leave exactly one free fourth socket.
+const three = new Node();
+three.onNodeCreated();
+for (let i = 0; i < 3; i++) {
+  three.outputs[i].targets.push({ id: 300 + i });
+  three.onConnectionsChange(2, i, true);
+}
+assert.equal(three.outputs.length, 4);
+assert.equal(three._10sorToggles.length, 4);
+
 panel._10sorToggles[10].value = false;
 panel._10sorToggles[10].callback(false);
 assert.equal(JSON.parse(panel._10sorState.value)[10], false);
@@ -81,4 +91,24 @@ restored.outputs[23].targets = [];
 restored.onConnectionsChange(2, 23, false);
 assert.equal(restored.outputs.length, 24);
 
-console.log("PASS: 24 outputs, per-image control, toggle all, save/restore and disconnect");
+// Regression: ComfyUI may temporarily restore the complete static backend
+// schema while app.configuringGraph is still true. The final lifecycle hook
+// must reduce it to connected outputs + one instead of exposing all 1,024.
+const rawRestore = new Node();
+rawRestore.onNodeCreated();
+rawRestore.outputs = Array.from({ length: 1024 }, (_, i) => ({
+  name: "Image " + (i + 1), type: "BOOLEAN", targets: i < 3 ? [{ id: 400 + i }] : [],
+}));
+rawRestore._10sorState.value = "[true,false,true,true]";
+app.configuringGraph = true;
+rawRestore.onConfigure();
+rawRestore.onAfterGraphConfigured();
+app.configuringGraph = false;
+assert.equal(rawRestore.outputs.length, 4);
+assert.equal(rawRestore._10sorToggles.length, 4);
+assert.equal(
+  JSON.stringify(rawRestore._10sorToggles.map((widget) => widget.value)),
+  JSON.stringify([true, false, true, true]),
+);
+
+console.log("PASS: adaptive outputs, per-image control, toggle all, save/restore and disconnect");

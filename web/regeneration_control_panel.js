@@ -101,10 +101,15 @@ app.registerExtension({
             this._10sorSaveState();
         };
 
-        nodeType.prototype._10sorSyncOutputs = function () {
-            if (this._10sorMutating || app.configuringGraph) return;
+        nodeType.prototype._10sorSyncOutputs = function (force = false, restoreState = false) {
+            // Connection callbacks can fire while LiteGraph is still restoring
+            // links. Ignore those partial states, but allow the final
+            // onAfterGraphConfigured pass to normalize the backend's complete
+            // static output schema.
+            if (this._10sorMutating || (!force && app.configuringGraph)) return;
             this._10sorMutating = true;
             try {
+                const stored = restoreState ? parseValues(this._10sorState?.value) : null;
                 let lastConnected = -1;
                 for (let index = 0; index < this.outputs.length; index++) {
                     if (this.isOutputConnected(index)) lastConnected = index;
@@ -119,6 +124,11 @@ app.registerExtension({
                     this.removeOutput(this.outputs.length - 1);
                 }
                 this._10sorEnsureWidgets();
+                if (stored) {
+                    this._10sorToggles.forEach((widget, index) => {
+                        widget.value = stored[index] ?? true;
+                    });
+                }
                 this._10sorSaveState();
                 this._10sorUpdateMaster();
                 this.setSize(this.computeSize());
@@ -137,17 +147,19 @@ app.registerExtension({
         const oldAfterGraphConfigured = nodeType.prototype.onAfterGraphConfigured;
         nodeType.prototype.onAfterGraphConfigured = function (...args) {
             const result = oldAfterGraphConfigured?.apply(this, args);
-            // Restore saved per-image controls AFTER graph/widget restoration.
-            this._10sorLoadState();
-            this._10sorSyncOutputs();
+            // At this point all links are available. Force normalization even
+            // when ComfyUI still reports that it is configuring the graph:
+            // visible outputs must equal the highest connected slot plus one.
+            this._10sorSyncOutputs(true, true);
             return result;
         };
 
         const oldConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (...args) {
-            const result = oldConfigure?.apply(this, args);
-            this._10sorLoadState();
-            return result;
+            // Do not mirror every restored backend output into a toggle here.
+            // Some ComfyUI paths temporarily restore all 1,024 static sockets;
+            // onAfterGraphConfigured trims them once their links are known.
+            return oldConfigure?.apply(this, args);
         };
     },
 });
